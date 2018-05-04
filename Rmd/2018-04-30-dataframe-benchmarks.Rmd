@@ -3,8 +3,6 @@ title: "Need for Speed: Benchmarks on Dataframes"
 author: "Ernest Omane-Kodie"
 ---
 
-<iframe src="https://giphy.com/embed/MZkHHFNtF9B8k" width="480" height="270" frameBorder="0" class="giphy-embed" allowFullScreen></iframe><p><a href="https://giphy.com/gifs/MZkHHFNtF9B8k">via GIPHY</a></p>
-
 In this post, I will explore the execution speed of various implementations of dataframe aggregation and combining operations in R.
 
 I will record timings using [microbenchmark](https://cran.r-project.org/web/packages/microbenchmark/), a package for measuring the performance of very small pieces of R code.  
