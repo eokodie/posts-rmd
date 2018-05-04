@@ -1,6 +1,7 @@
 ---
 title: "Need for Speed: Benchmarks on Dataframes" 
 author: "Ernest Omane-Kodie"
+categories: ["R"]
 ---
 
 In this post, I will explore the execution speed of various implementations of dataframe aggregation and combining operations in R.
