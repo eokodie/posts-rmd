@@ -1,0 +1,307 @@
+---
+title: "Need for Speed: Benchmarks on Dataframes" 
+author: "Ernest Omane-Kodie"
+---
+
+<iframe src="https://giphy.com/embed/MZkHHFNtF9B8k" width="480" height="270" frameBorder="0" class="giphy-embed" allowFullScreen></iframe><p><a href="https://giphy.com/gifs/MZkHHFNtF9B8k">via GIPHY</a></p>
+
+In this post, I will explore the execution speed of various implementations of dataframe aggregation and combining operations in R.
+
+I will record timings using [microbenchmark](https://cran.r-project.org/web/packages/microbenchmark/), a package for measuring the performance of very small pieces of R code.  
+
+>"The most productive way to make code fast is... to make it work correctly, determine whether it's actually worth speeding it up, and--in those cases where it is--to use a profiler to identify bottlenecks" 
+>-- [Best Practices for Scientific Computing](https://arxiv.org/abs/1210.0530)
+
+For larger, fully-functioning chunks of R code, where a clear need for optimisation has been established, you might want to consider rewriting bottlenecks using lower level languages like C and Fortran, but bear in mind that any speed gains will come at the expense of readability and development time. 
+
+As a general rule of thumb, whenever possible, first tune the performance of R code using R solutions and resort to lower level languages only when you are certain that the performance gain will outstrip development time. 
+
+>"The conventional wisdom shared by many of today's software engineers calls for ignoring efficiency in the small; but I believe this is simply an overreaction... In established engineering disciplines a 12% improvement, easily obtained, is never considered marginal."
+>-- Donald Knuth
+
+## Disclaimer
+The benchmarks are based on simple dataframes and do not take into account the impact of datasets of varying complexity on performance. The results may not be representative of your use case, since any difference in your system hardware and the structure of your datasets may affect actual test results. Always benchmark against your specific data and use case.
+
+
+## Setup
+The tests are performed on a single Windows 10 laptop (i7 6820HK @2.7 GHz) with 64GB RAM and a decent SSD (M.2 Samsung SM951).
+
+For each test, there are 10 warm-up iterations followed by the actual benchmark. Execution times are based on running each expression 1,000 times and randomly shuffling the order of expressions evaluated.
+
+## Data
+First up, we need example datasets to run the tests on. Let's create a few dataframes and store them in a list for convenience.
+
+```{r message=FALSE, warning=FALSE}
+library(tidyverse)
+library(microbenchmark)
+library(data.table)
+library(highcharter)
+library(magrittr) 
+library(glue)
+num_of_iterations = 1000 
+```
+
+```{r}
+create_data <- function(i){
+  df = data.frame(key = c("a", "b", "c"), value = i*(1:3))
+  return(df)
+} 
+data_list <- 1:4 %>% map(create_data) 
+```
+
+## Helpers
+Next, we will simplify our workflow with a few helper functions, each serving a specific purpose.
+```{r}
+compare_dfs <- function(df_name){
+  df1 <- get(ls(pattern = pattern, envir = .GlobalEnv)[1])
+  setequal(df1, get(df_name))
+}
+```
+
+```{r}
+create_boxplot <- function(data, title){
+  p <- hcboxplot(x = data$time, var = data$expr, 
+                 outliers = FALSE, color = 'tomato', 
+                 fillColor = 'white', lineWidth = 1.5) %>%
+    hc_chart(type = "column")  %>% 
+    hc_title(text = glue("<b>{title}<b>"))  %>%
+    hc_yAxis(title = list(text = "<b> Time (ns)<b>")) %>% 
+    hc_add_theme(hc_theme_ffx())
+  return(p)
+}
+```
+
+```{r}
+give_names <- function(name){
+  df <- get(name)
+  df %<>% setnames(c("key", paste0("value_", 1:(ncol(df)-1))))
+}
+```
+ 
++ `compare_dfs`: a function which takes a list of dataframes and checks that all dataframes in the list are identical
++ `create_boxplot`: a function which creates a boxplot of microbenchmark timings by passing a `microbenchmark` object to `highcharter`; an R wrapper for the [Highcharts javascript library](https://www.highcharts.com)
++ `give_names`: a function to rename the columns of a dataframe
+
+## Stacking dataframes
+
+R provides several ways of combining dataframes by rows to create a larger dataframe. Note that this type of operation only works if the dataframes have the same variable names.  
+
+I will compare four approaches:
+
+  * multiple calls to `base::rbind` using a for-loop
+  * a call to `base::rbind` using `do.call`
+  * a call to `data.table::rbindlist` 
+  * a call to `dplyr::bind_rows`
+
+Let's start by stacking up the dataframes using these approaches:
+```{r, warning=FALSE}
+for_loop_rbind <- function(data_list){
+  df = data_list[[1]]
+  for (i in 2:length(data_list)){
+    df = rbind(df, data_list[[i]])
+  }
+  return(df)
+}
+
+rbind_for_loop_stk = for_loop_rbind(data_list)
+rbind_do_call_stk = do.call(rbind, data_list)
+data_table_rbindlist_stk = rbindlist(data_list)
+dplyr_bind_rows_stk = bind_rows(data_list)
+```
+
+
+Do the different methods produce the same dataframe? 
+```{r}
+pattern = '_stk'
+ls(pattern = pattern) %>%
+  map_lgl(compare_dfs)
+```
+
+As expected, the results are identical. We can now test the execution speed of each method but before we proceed, let's do a quick sense check of what to expect. `dplyr::bind_rows` and `data.table::rbindlist` both accept a list of dataframes and are optimized for iterating over many dataframes. So you would expect these to be faster than any other implementation which combines two dataframes at a time (i.e. the base R versions). 
+
+```{r}
+microbenchmark(
+  dplyr_bind_rows = bind_rows(data_list),
+  data_table_rbindlist = rbindlist(data_list),
+  do_call_rbind = do.call(rbind, data_list),  
+  for_loop_rbind = for_loop_rbind(data_list),
+  times = num_of_iterations,
+  unit = 'ns',
+  control = list(warmup = 10)
+  ) %>% 
+  create_boxplot(title = "Stacking")
+```
+
+As expected, `dplyr::bind_rows` and `data.table::rbindlist` are faster than the implementation in `base`. 
+
+Also note that `dplyr::bind_rows` outperforms `data.table::rbindlist`.
+
+
+
+## Multiple joins
+
+I will use the same workflow as before to compare the following approaches:
+
++ single call to `base::merge`
++ single call to `data.table:::merge.data.table`
++ use `purrr::reduce` to iteratively perform repeated `dplyr::left_join`
+
+```{r, warning=FALSE}
+for_loop_leftjoin_func <- function(data_list){
+  df = data_list[[1]]
+  for (i in 2:length(data_list)){
+    df = left_join(df, data_list[[i]], by = "key")
+  }
+  return(df)
+}
+
+base_merge_jn <- reduce(data_list, base::merge, by = c("key"))
+dplyr_left_join_jn <- reduce(data_list, left_join, by = "key") 
+datatable_merge_jn <- reduce(data_list, data.table:::merge.data.table, by = c("key"))
+```
+
+```{r}
+#Are the dataframes identical?
+# rename df columns
+pattern = '_jn'
+rename_dfs <- ls(pattern = pattern) %>%
+  map(give_names)
+
+# compare dataframes
+ls(pattern = pattern) %>%
+  map_lgl(compare_dfs) 
+```
+
+```{r, warning=FALSE}
+# run and plot benchmarks
+microbenchmark(
+  base_merge = reduce(data_list, base::merge, by = c("key")),  
+  dplyr_left_join = reduce(data_list, left_join, by = "key"), 
+  datatable_merge = reduce(data_list, data.table:::merge.data.table, 
+                           by = c("key")),
+  times = num_of_iterations,
+  unit = "ns",
+  control = list(warmup = 10)
+  ) %>% 
+  create_boxplot(title = "Joins") 
+```
+
+In this example, `base::merge` is twice as fast as `dplyr::left_join`, and significantly outperforms `data.table:::merge.data.table`.
+
+
+## Combining by columns
+
+I will compare the following approaches:
+
+  * multiple calls to `base::cbind` using a for-loop
+  * single call to `base::cbind` using `do.call`
+  * single call to `dplyr::bind_cols`
+
+```{r}
+for_loop_cbind <- function(data_list){
+  df = data_list[[1]]
+  for (i in 2:length(data_list)){
+    df = cbind(df, data_list[[i]])
+  }
+  return(df)
+}
+
+base_cbind_for_loop_cols = for_loop_cbind(data_list)
+base_cbind_do_call_cols = do.call(cbind, data_list)
+dplyr_bind_cols = bind_cols(data_list)
+```
+
+```{r}
+#Are the dataframes identical?
+# rename df columns
+pattern = '_cols'
+rename_dfs <- ls(pattern = pattern) %>%
+  map(give_names)
+
+# compare dataframes
+ls(pattern = pattern) %>%
+  map_lgl(compare_dfs) 
+```
+
+Run benchmark
+```{r, warning=FALSE}
+microbenchmark(
+  base_cbind_do_call = do.call(cbind, data_list),
+  dplyr_bind_cols = bind_cols(data_list),
+  base_cbind_for_loop = for_loop_cbind(data_list),  
+  times = num_of_iterations,
+  unit = 'ns',
+  control = list(warmup = 10)
+  ) %>% 
+  create_boxplot(title = "Combine by columns")   
+```
+
+In this example, `base::cbind` with `do.call` is the most efficient.
+
+
+## Aggregation
+I will test this using the `mtcars` dataset to compute the average weight (in 1000 lbs) of cars grouped by number of cylinders. As usual, I will compare functions in `dplyr`, `base` and `data.table`.
+```{r}
+base_agg <- aggregate(mtcars$wt, by = list(mtcars$cyl), mean, na.rm = TRUE) %>% 
+  as_tibble()
+mtcars_dt = data.table(mtcars)
+data_table_agg <- mtcars_dt[ , mean(wt, na.rm = TRUE), cyl] %>% 
+  as_tibble()
+dplyr_agg <- mtcars %>% 
+  group_by(cyl) %>% 
+  summarize(mean(wt, na.rm = TRUE))
+```
+ 
+```{r}
+# rename df columns
+pattern = '_agg'
+rename_dfs <- ls(pattern = pattern) %>%
+  map(give_names)
+# compare dataframes
+ls(pattern = pattern) %>%
+  map_lgl(compare_dfs) 
+```
+ 
+```{r}
+microbenchmark(
+  datatable = mtcars_dt[ , mean(wt, na.rm = TRUE), cyl],  
+  base = aggregate(mtcars$wt, by = list(mtcars$cyl), mean, na.rm = TRUE),
+  dplyr = mtcars %>% group_by(cyl) %>% summarize(mean(wt, na.rm = TRUE)),
+  times = 1000,
+  unit = "ns",
+  control = list(warmup = 10)
+) %>% 
+  create_boxplot(title = "Aggregation")
+```
+In this example, `data.table` is the most efficient.
+
+
+## Wrapping up
+
+This study is far from a comprehensive benchmark. It is my attempt at quickly exploring the order of magnitude of execution times for common operations on dataframes; and more importantly, setting up a workflow which can be extended to cover other scenarios.
+
+Feel free to use the methods identified in these benchmarks to speed up your code but remember that __writing good code trumps writing fast code__.
+
+>"We follow two rules in the matters of optimization:
+Rule 1: Don't do it. 
+Rule 2 (for experts only): Don't do it yet - that is, not until you have a perfectly clear and unoptimized solution" 
+-- M. A. Jackson
+
+For more information about code optimisation, read [Hadley Wickham's take on the topic]( http://adv-r.had.co.nz/Profiling.html),  item 67 from [Joshua Bloch's Effective Java](https://books.google.co.uk/books?id=BIpDDwAAQBAJ&printsec=frontcover&source=gbs_ge_summary_r&cad=0#v=onepage&q&f=false) and the [Best Practices for Scientific Computing](https://arxiv.org/abs/1210.0530).
+
+
+The full blog post is available on [www.eokodie.com.](https://www.eokodie.com/blog/need-for-speed-benchmarks-on-dataframes/)
+
+
+
+
+
+
+
+
+
+
+
+
+
+

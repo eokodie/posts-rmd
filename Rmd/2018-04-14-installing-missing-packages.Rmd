@@ -1,0 +1,115 @@
+---
+title: "Installing Missing Packages from Bioconductor, CRAN and Github" 
+author: "Ernest Omane-Kodie"
+---
+
+Over the past few days I have had to use computers that are different from my trusty old laptop. One thing I noticed while working with R on the new machines is that the excitement in checking for, and installing, missing packages wears off   pretty quickly. This blog post is a walk-through of a function I wrote to make the process less painful.
+
+
+## A bit more background
+When R developers create open source packages, they typically distribute them through [The Comprehensive R Archive Network (CRAN)](https://cran.r-project.org/), [Github](https://github.com/) or, if the package concerns computational biology and/or bioinformatics, [Bioconductor.](https://bioconductor.org/) 
+
+This adds to the complication of knowing which source to install a package from, which installation functions to use and, in the case of GitHub packages, the exact repository path to use.
+
+### Here are a few examples for context.
+
+The `taskscheduleR` package is distributed on [Github.](https://github.com/) We can install it with:
+```{r eval=FALSE, include=TRUE}
+devtools::install_github("bnosac/taskscheduleR")
+```
+
+The `GenomicFeatures` package is distributed on [Bioconductor](https://www.bioconductor.org/install/) so to install it we do this:
+```{r eval=FALSE, include=TRUE}
+source("https://bioconductor.org/biocLite.R")
+biocLite("GenomicFeatures")
+```
+
+Lastly, `Rcpp` is distributed on [CRAN](https://cran.r-project.org/) so we install it with:
+```{r eval=FALSE, include=TRUE}
+install.packages("Rcpp")
+```
+
+## The solution
+We will use the `remedy` package as an example to test our code. To install `remedy`, we first need to figure out which repository it is distributed on:
+```{r message=FALSE, warning=FALSE}
+library(tidyverse)
+library(glue)
+package = "remedy" 
+```
+
+Is it available on CRAN?
+
+We can use `tools::CRAN_package_db()` to extract metadata for the current packages in the CRAN package repository:
+```{r}
+package %in% tools::CRAN_package_db()$Package
+```
+As you can see, `remedy` is not on CRAN.
+
+Is it on Biconductor? 
+
+`BiocInstaller::all_group()` gives the names of all current packages on Bioconductor: 
+```{r}
+package %in% BiocInstaller::all_group()
+```
+`remedy` is not available on Bioconductor either. 
+
+Lastly, we check whether the package is on GitHub. For this, we will use the [rpkg API](http://rpkg-api.gepuro.net/) and the `jsonlite` package. 
+```{r}
+url <- glue::glue("http://rpkg-api.gepuro.net/rpkg?q={package}")
+gh_pkgs <- jsonlite::fromJSON(url)
+gh_pkgs
+```
+Note that `fromJSON` extracts GitHub R package information from the `rpkg API` into a dataframe. If the said package is not available on Github, the funciton returns an empty list.
+
+In our example, we can see that the package we're after is available on GitHub.
+We will go ahead and install it in a while, but in the meantime let's tidy up the GitHub package metadata we just extracted:
+
+```{r eval=TRUE, include=TRUE}
+gh_pkg <- gh_pkgs %>% 
+  separate(col = pkg_name, into = c("repo", "pkg"), sep = "/", remove = F) %>% 
+  filter(pkg == package) %>% 
+  select(pkg_name, repo, pkg)
+gh_pkg
+```
+
+The package is in the ThinkR-open repository on GitHub so we can install it with:
+```{r eval=FALSE, include=TRUE}
+install_github(gh_pkg$pkg_name[1])
+```
+
+We can follow a similar process to install packages on CRAN and Bioconductor.
+
+
+## Putting it all together
+Let's finish off by wrapping everything in a function and throwing in a few useful checks for robustness:
+```{r eval=FALSE, include=TRUE}
+install_missing_pkg <- function(package){
+  url <- glue::glue("http://rpkg-api.gepuro.net/rpkg?q={package}")
+  cran_pkgs <- tools::CRAN_package_db()$Package
+  gh_pkgs <- jsonlite::fromJSON(url)
+  source("http://bioconductor.org/biocLite.R")
+  bioc_pkgs = all_group()
+  
+  if (is.null(nrow(gh_pkgs)) | !(package %in% union(cran_pkgs, bioc_pkgs))) {
+    stop("`package` is not available on CRAN, Github or Bioconductor")
+  }
+  # install from CRAN  
+  if (package %in% cran_pkgs){
+    install.packages(package)
+  # install from Bioconductor    
+  } else if (package %in% bioc_pkgs){
+    biocLite(package, suppressUpdates = TRUE)
+  }
+  # install from Github
+  else{
+    gh_pkg <- gh_pkgs %>% 
+      separate(col = pkg_name, into = c("repo", "pkg"), sep = "/", remove = F) %>% 
+      mutate(available = package %in% cran_pkgs) %>% 
+      filter(pkg == package)
+    devtools::install_github(gh_pkg$pkg_name[1])
+  }
+}
+```
+
+
+The full blog post is available on [www.eokodie.com.](https://www.eokodie.com/blog/installing-missing-packages-from-bioconductor-cran-and-github/)
